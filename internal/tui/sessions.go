@@ -16,12 +16,13 @@ import (
 
 // sessionsView owns the sessions page UI.
 type sessionsView struct {
-	app     *App
-	list    *tview.List
-	term    *tview.TextView
-	input   *tview.InputField
-	current *shell.Session
-	mu      sync.Mutex
+	app        *App
+	list       *tview.List
+	term       *tview.TextView
+	input      *tview.InputField
+	current    *shell.Session
+	mu         sync.Mutex
+	generation uint64
 }
 
 // buildSessions is called from App.New.
@@ -31,6 +32,21 @@ func (a *App) buildSessions() {
 
 	sv.list = tview.NewList().ShowSecondaryText(true)
 	sv.list.SetBorder(true).SetTitle(" Sessions (Enter: connect, r: refresh, k: kill) ")
+	sv.list.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		if ev.Key() != tcell.KeyRune {
+			return ev
+		}
+		switch ev.Rune() {
+		case 'r':
+			sv.refresh()
+			return nil
+		case 'k':
+			sv.kill()
+			return nil
+		default:
+			return ev
+		}
+	})
 
 	sv.term = tview.NewTextView().
 		SetDynamicColors(true).
@@ -79,7 +95,7 @@ func (sv *sessionsView) refresh() {
 		})
 	}
 	if sv.list.GetItemCount() == 0 {
-		sv.list.AddItem("(no live sessions)", "run a shell module or Ctrl+M mass scan", 0, nil)
+		sv.list.AddItem("(no live sessions)", "set a target to start the automatic scan", 0, nil)
 	}
 }
 
@@ -87,6 +103,7 @@ func (sv *sessionsView) refresh() {
 func (sv *sessionsView) connect(s *shell.Session) {
 	sv.mu.Lock()
 	sv.current = s
+	sv.generation++
 	sv.mu.Unlock()
 	sv.term.Clear()
 	fmt.Fprintf(sv.term, "[green]connected: %s[white] (%s, %s)\n", s.ID, s.Kind, s.Target)
@@ -118,28 +135,45 @@ func (sv *sessionsView) exec(cmdline string) {
 // execAsync runs one command in the background and prints its output.
 func (sv *sessionsView) execAsync(s *shell.Session, cmdline string) {
 	fmt.Fprintf(sv.term, "[aqua]> %s[white]\n", tview.Escape(cmdline))
+	sv.mu.Lock()
+	generation := sv.generation
+	sv.mu.Unlock()
 	go func() {
 		ctx, cancel := context.WithTimeout(sv.app.ctx, 25*time.Second)
 		defer cancel()
 		out, err := s.Exec(ctx, cmdline)
-		if err != nil {
-			fmt.Fprintf(sv.term, "[red]error: %v[white]\n", tview.Escape(err.Error()))
-		}
-		if out != "" {
-			fmt.Fprintf(sv.term, "%s\n", tview.Escape(out))
-		}
+		sv.app.app.QueueUpdateDraw(func() {
+			sv.mu.Lock()
+			active := sv.current == s && sv.generation == generation
+			sv.mu.Unlock()
+			if !active {
+				return
+			}
+			if err != nil {
+				fmt.Fprintf(sv.term, "[red]error: %v[white]\n", tview.Escape(err.Error()))
+			}
+			if out != "" {
+				fmt.Fprintf(sv.term, "%s\n", tview.Escape(out))
+			}
+		})
 	}()
 }
 
 // kill closes the active session.
 func (sv *sessionsView) kill() {
-	sv.mu.Lock()
-	defer sv.mu.Unlock()
-	if sv.current == nil {
+	idx := sv.list.GetCurrentItem()
+	sessions := shell.M().List()
+	if idx < 0 || idx >= len(sessions) {
 		return
 	}
-	shell.M().Close(sv.current.ID)
-	sv.app.Logf("warn", "session %s closed", sv.current.ID)
-	sv.current = nil
+	selected := sessions[idx]
+	sv.mu.Lock()
+	if sv.current == selected {
+		sv.current = nil
+		sv.generation++
+	}
+	sv.mu.Unlock()
+	shell.M().Close(selected.ID)
+	sv.app.Logf("warn", "session %s closed", selected.ID)
 	sv.refresh()
 }

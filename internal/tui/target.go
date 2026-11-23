@@ -1,5 +1,4 @@
-// Package tui implements the wpforge console: a tview-based interface with
-// a module browser (left), output console (right), and status bar (bottom).
+// Package tui implements the wpforge console, target prompt, and shell sessions.
 package tui
 
 import (

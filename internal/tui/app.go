@@ -1,5 +1,4 @@
-// Package tui implements the wpforge console: a tview-based interface with
-// a module browser (left), output console (right), and status bar (bottom).
+// Package tui implements the wpforge console, target prompt, and shell sessions.
 package tui
 
 import (
@@ -17,10 +16,10 @@ import (
 
 // App owns the tview application and all screens.
 type App struct {
-	app      *tview.Application
-	pages    *tview.Pages
-	console  *tview.TextView
-	status   *tview.TextView
+	app     *tview.Application
+	pages   *tview.Pages
+	console *tview.TextView
+	status  *tview.TextView
 
 	target     *module.Target
 	sessionsUI *sessionsView
@@ -61,7 +60,7 @@ func (a *App) buildConsole() {
 
 func (a *App) buildStatusBar() {
 	a.status = tview.NewTextView().SetDynamicColors(true)
-	a.status.SetText("[gray]Ctrl+L filter | Ctrl+R run | Ctrl+T target | Ctrl+M mass scan | Ctrl+S shells | Ctrl+C quit[white]")
+	a.status.SetText("[gray]Ctrl+T target / start scan | Ctrl+S shells | Ctrl+C cancel / quit[white]")
 }
 
 func (a *App) layout() {
@@ -120,10 +119,13 @@ func (l consoleLogger) Successf(f string, v ...any) { l.a.Logf("ok", f, v...) }
 func (l consoleLogger) Rawf(f string, v ...any)     { l.a.Logf("raw", f, v...) }
 
 // NewWithTarget builds the UI with a pre-seeded target (from CLI flags).
-func NewWithTarget(targetURL, user, pass string) *App {
+func NewWithTarget(targetURL, user, pass, timeoutSecs string) *App {
 	a := New()
 	if targetURL != "" {
-		t, err := newTarget(targetURL, "15")
+		if timeoutSecs == "" {
+			timeoutSecs = "15"
+		}
+		t, err := newTarget(targetURL, timeoutSecs)
 		if err != nil {
 			a.Logf("error", "invalid -target %q: %v", targetURL, err)
 			return a
@@ -155,6 +157,10 @@ func (a *App) promptTarget() {
 	form.AddPasswordField("Password (optional)", passField, 20, '*', func(s string) { passField = s })
 	form.AddInputField("Timeout (s)", timeoutField, 5, nil, func(s string) { timeoutField = s })
 	form.AddButton("Save", func() {
+		if a.cancel != nil {
+			a.Logf("warn", "cannot change target while a scan is running; press Ctrl+C to cancel first")
+			return
+		}
 		t, err := newTarget(urlField, timeoutField)
 		if err != nil {
 			a.Logf("error", "invalid target: %v", err)
